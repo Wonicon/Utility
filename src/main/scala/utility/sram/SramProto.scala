@@ -155,7 +155,21 @@ class SramArray2P(
 }
 
 object SramProto {
-  private val defMap = mutable.Map[String, Definition[SramArray]]()
+  // Definitions are scoped to a Chisel circuit.  Keeping one process-wide
+  // name-only cache lets a Definition from an earlier `simulate`/elaboration
+  // leak into a later circuit, where Chisel quite correctly rejects the stale
+  // imported definition.  Include the circuit identity in the cache key while
+  // still sharing the definition between instances in the same circuit.
+  private val noCircuit = new Object
+  private val defMap = mutable.Map[(AnyRef, String), Definition[SramArray]]()
+
+  private def cacheContext: AnyRef = {
+    chisel3.XSCompatibility.currentModule
+      .flatMap(_ => chisel3.XSCompatibility.currentCircuit)
+      .orElse(chisel3.XSCompatibility.currentModule)
+      .map(_.asInstanceOf[AnyRef])
+      .getOrElse(noCircuit)
+  }
 
   def init(sram: Instance[SramArray], singlePort: Boolean, clock: Clock, writeClock: Option[Clock]): Unit = {
     if(singlePort) {
@@ -222,15 +236,16 @@ object SramProto {
     val numPort = if(singlePort) 1 else 2
     val maskWidth = width / maskSegments
     val sramName = Some(s"sram_array_${numPort}p${depth}x${width}m$maskWidth$mcpStr${mbist}_$suffix")
-    if(!defMap.contains(sramName.get)) {
+    val cacheKey = (cacheContext, sramName.get)
+    if(!defMap.contains(cacheKey)) {
       val sramDef = if(singlePort) {
         Definition(new SramArray1P(depth, width, maskSegments, hasMbist, hasSramCtl, sramName))
       } else {
         Definition(new SramArray2P(depth, width, maskSegments, hasMbist, hasSramCtl, sramName))
       }
-      defMap(sramName.get) = sramDef
+      defMap(cacheKey) = sramDef
     }
-    val array = Instance(defMap(sramName.get))
+    val array = Instance(defMap(cacheKey))
     SramProto.init(array, singlePort, clock, writeClock)
     (array, sramName.get)
   }
